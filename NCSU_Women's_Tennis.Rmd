@@ -1,0 +1,1715 @@
+---
+title: "Excel"
+author: "Jason Wang and Susan Davis"
+date: "2024-10-06"
+output: html_document
+
+---
+17 Metrics:
+
+1.  Total Points Won -> done
+2.  Winners --> Done
+3.  Errors Forced 
+4.  Unforced Errors 
+5.  Break Points 
+6.  Aces. --> Done
+7.  Double Faults --> Done
+8.  First Serves In --> Done
+9.  First Serves Won --> Done
+10. Second Serves in --> Done
+11. Second Serves Won
+12. 1st serve returns
+13. 2nd serve returns
+14. Short Rallies won < 5
+15. medium rallies won 5 to 8 shots
+16. long rallies won > 8
+17. service games won
+
+Questions:
+1.  Win count by season metric appears to be off. For example we have Abigail winning 7 of her games in 2020-2021 in the data set, however, NC State Website says "Posted a 16-5 overall singles record, including being 9-3 in conference play". We only have her playing 8 matches total that season so not sure where the 9th other four games happened. Before we ask, maybe a possibility is they are counting the matches where that was 'Incomplete' into these scores, maybe she won those somehow???? Maybe not won as a match but won on its level?
+Source: https://gopack.com/sports/womens-tennis_data/roster/abigail-rencheli/12580. 
+
+2. What is goin on with this rally - #610c369d3f0000d84fafd466 <- sus rally length of 111
+
+3. Is he interested in forced error caused, leading to a point win. Or foced errors given up, leading to a loss of points? 
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(readxl)
+
+tennis_data <- read_csv("ncstateSinglesStatReport-5.csv")
+avg_stats_table <- read_excel('average.xlsx')
+unique(tennis_data['player'])
+```
+
+
+```{r replacement and manipulations of name mispellings}
+tennis_data['error_type'] <- replace_na(NA)
+tennis_data['shot_type'] <- replace_na(NA)
+
+tennis_data <- tennis_data %>%
+  mutate(player = case_when
+         (player == 'Gina Dittman' ~ "Gina Dittmann",
+          player == 'Gabriella Broadfoot' ~ 'Gabriella Broadfoot',
+          player == 'Kristina Paskauskas' ~ 'Kristina Paskauskas',
+           TRUE ~ player
+         )) %>%
+  mutate(finalScore = str_split(finalScore, "\\|")) %>%
+  unnest_wider(finalScore, names_sep = "_")
+```
+
+```{r season}
+#Create a new column called season to help distinguish which womens tennis_data college season each row took place in
+# the date column will be used to tell, it is date type. Ex) 2021-03-15
+# I will do seasons by school year
+# I will have a seson start in august 1st of each year and end of the last day of july each year
+# labels: 2020-2021, 2021-2022, 2022-2023, 2023-2024, 2024-2025
+# Sample DataFrame
+
+# Load necessary libraries
+
+
+# Function to create season column based on school year
+get_season <- function(date) {
+  year <- year(date)
+  # If the date is before August, it belongs to the previous school year
+  if(month(date) < 7) {
+    return(paste0(year))
+  } else {
+    return(paste0(year + 1))
+  }
+}
+
+# Apply function to create season column
+tennis_data <- tennis_data %>%
+  mutate(season = as.character(sapply(date, get_season)))
+
+
+```
+
+```{r}
+unique(tennis_data$season)
+```
+```{r}
+subset(tennis_data, season == '2018-2019')
+
+```
+
+```{r}
+tennis_data_match <- tennis_data %>%
+  select(c('matchId', 'date', 'player', 'finalScore_1', 'finalScore_2', 'finalScore_3')) %>%
+  distinct()
+```
+
+```{r cleaned tennis_data match}
+#removes games where there is only one set  won, can't calculate matches won if not enough sets are okayed
+rows_to_remove <- which(is.na(tennis_data_match['finalScore_2']) & 
+     is.na(tennis_data_match['finalScore_3']))
+
+tennis_data_match_clean <- tennis_data_match[-rows_to_remove, ]
+```
+
+```{r}
+# Process the data frame
+tennis_data_match_clean <- tennis_data_match_clean %>%
+  rowwise() %>%
+  mutate(evaluated_score = eval(parse(text = finalScore_1))) %>%
+  mutate(finalScore_1 = case_when(
+    as.integer(evaluated_score) < 0 ~ "Opponent",
+    as.integer(evaluated_score) > 0 ~ "player",
+    as.integer(evaluated_score) == 0 ~ "Tie",
+    TRUE ~ as.character(evaluated_score)
+  )) %>%
+  select(-evaluated_score) %>%
+  mutate(evaluated_score = eval(parse(text = finalScore_2))) %>%
+  mutate(finalScore_2 = case_when(
+    as.integer(evaluated_score) < 0 ~ "Opponent",
+    as.integer(evaluated_score) > 0 ~ "player",
+    as.integer(evaluated_score) == 0 ~ "Tie",
+    TRUE ~ as.character(evaluated_score)
+  )) %>%
+  select(-evaluated_score) %>%
+  mutate(evaluated_score = eval(parse(text = finalScore_3))) %>%
+  mutate(finalScore_3 = case_when(
+    is.na((evaluated_score)) ~ "NA",
+    as.integer(evaluated_score) < 0 ~ "Opponent",
+    as.integer(evaluated_score) > 0 ~ "player",
+    as.integer(evaluated_score) == 0 ~ "Tie",
+    TRUE ~ as.character(evaluated_score)
+  )) %>%
+  select(-evaluated_score)
+```
+
+```{r}
+# Initialize variables
+tennis_data_match_clean['won'] <- NULL
+
+# Get the last three columns
+last_three_columns <- tennis_data_match_clean[, (ncol(tennis_data_match_clean) - 2):ncol(tennis_data_match_clean)]
+
+for (i in 1:nrow(tennis_data_match_clean)) {
+    player = 0
+    opponent = 0
+    
+    # Count occurrences of "Player" and "Opponent"
+    for(col in names(last_three_columns)) {
+        value <- tennis_data_match_clean[i, col]
+        if (value == "player") {
+            player = player + 1
+        } else if (value == "Opponent") {
+            opponent = opponent + 1
+        }
+    }
+    
+    # Determine the outcome
+    if (player == 2) {
+        tennis_data_match_clean[i, 'won'] = 1
+    } else if (opponent == 2) {
+        tennis_data_match_clean[i, 'won'] = -1
+    } else {
+        tennis_data_match_clean[i, 'won'] = 0 # should account for incomplete matches
+
+    }
+}
+```
+
+```{r total win count}
+total_match_wins<- tennis_data_match_clean %>%
+  filter(won != 0) %>%
+  group_by(player) %>%
+  summarize(matches_won = sum(won == 1),
+            matches_played = n())
+head(total_match_wins)
+```
+
+
+```{r }
+tennis_data_match_clean <- tennis_data_match_clean%>%
+  mutate(season = sapply(date, get_season))
+
+season_win_count <- tennis_data_match_clean %>%
+  filter(won != 0) %>%
+  group_by(player, season) %>%
+  summarize(matches_won = sum(won==1), matches_played = n())
+head(season_win_count)
+```
+```{r win proportion }
+proportion_wins<- tennis_data_match_clean %>%
+  filter(won != 0) %>%
+  group_by(player) %>%
+  summarize(proportion_matches_won = sum(won ==1)/ n())
+head(proportion_wins)
+```
+```{r}
+proportion_wins_season<- tennis_data_match_clean %>%
+  filter(won != 0) %>%
+  group_by(player, season) %>%
+  summarize(proportion_matches_won = sum(won ==1)/ n())
+head(proportion_wins_season)
+```
+
+```{r}
+season_table <- inner_join(season_win_count, proportion_wins_season, by = c('player', 'season'))
+  
+
+print(season_table)
+
+```
+
+
+```{r}
+# Perform the join
+career_table <- inner_join(total_match_wins, proportion_wins, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+winner_outcome_match<- tennis_data %>%
+  group_by(player,matchId, date) %>%
+  summarize(
+    winner_outcome = sum(outcome == "Winner" & pointWonBy == 0),
+    winner_outcome_proportion = winner_outcome / n()
+  )
+
+head(winner_outcome_match)
+
+```
+
+```{r}
+winner_outcome_season <- tennis_data %>%
+  group_by(player, season) %>%
+  summarize(
+    winner_outcome = sum(outcome == "Winner" & pointWonBy == 0),
+    winner_outcome_proportion = winner_outcome / n()
+  )
+
+head(winner_outcome_season)
+
+```
+
+```{r}
+season_table <- inner_join(season_table, winner_outcome_season, by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+winner_outcome <- tennis_data %>% 
+  group_by(player) %>%
+  summarize(winner_outcome = sum(outcome == "Winner" & pointWonBy == 0),
+            winner_outcome_proportion = winner_outcome / n())
+
+head(winner_outcome)
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, winner_outcome, by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r aces by match}
+aces_match <- tennis_data %>% 
+  filter(server == 0) %>%
+  group_by(player, matchId, date) %>%
+  summarize(aces = sum(outcome == "Ace"),
+            serve = n())
+
+head(aces_match)
+```
+```{r}
+match_table <- inner_join(winner_outcome_match, aces_match, by = c('player', 'matchId','date'))
+```
+
+
+```{r aces by season}
+aces_season <- tennis_data %>% 
+  filter(server == 0) %>%
+  group_by(player, season) %>%
+  summarize(aces = sum(outcome == "Ace"),
+            serve = n())
+head(aces_season)
+```
+
+```{r}
+aces_total <- tennis_data %>% 
+  filter(server == 0) %>%
+  group_by(player) %>%
+  summarize(aces = sum(outcome == "Ace"),
+            serve = n())
+head(aces_total)
+```
+
+
+```{r}
+season_table <- inner_join(season_table, aces_season , by = c('player','season'))
+head(season_table)
+```
+
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, aces_total, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+tennis_data %>% 
+  filter(server == 0) %>%
+  group_by(player) %>%
+  summarize(unnique_matched = n_distinct(matchId))
+```
+
+
+```{r}
+aces_proportion_career <-  tennis_data %>% 
+  filter(server == 0) %>%
+  group_by(player) %>%
+  summarize(aces_proportion = sum(outcome == "Ace")/n())
+
+head(aces_proportion_career)
+
+# Perform the join
+career_table <- inner_join(career_table, aces_proportion_career, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+aces_proportion_season <-  tennis_data %>% 
+  filter(server == 0) %>%
+  group_by(player, season) %>%
+  summarize(aces_proportion = sum(outcome == "Ace")/n())
+
+head(aces_proportion_season)
+
+season_table <- inner_join(season_table, aces_proportion_season , by = c('player','season'))
+head(season_table)
+
+```
+
+
+```{r}
+## Unforced errors should not be accounted for because it is not due to the skill of the server/player.
+## We want to create a metric for serving dominance / serve point wins due to the skill OF the server/player.
+## This is useful outside of forced error / unforced error because it focuses on the serve of the player.
+
+serve_point_win <- tennis_data %>%
+  group_by(player, matchId, date) %>%
+  # Filter to find total number of serves our player has (denominator)
+  filter(server == 0) %>%
+  summarize(
+    # Calculate number of serves that meet rallyLength = 1 and filter out unforced errors and lets
+    total_JS_serves = sum(rallyLength == 1 & outcome != "Unforced Error" & outcome != "Let"),
+    Jason_Susan = total_JS_serves / n()
+  )
+
+head(serve_point_win)
+```
+
+
+```{r}
+serve_point_win_season <- tennis_data %>%
+  group_by(player, season) %>%
+  # Filter to find total number of serves for the player (denominator)
+  filter(server == 0) %>%
+  summarize(
+    # Calculate number of good serves (rallyLength = 1, excluding unforced errors and lets)
+    total_JS_serves = sum(rallyLength == 1 & outcome != "Unforced Error" & outcome != "Let"),
+    # Handle division by zero
+    Jason_Susan = total_JS_serves / n()
+  )
+
+head(serve_point_win_season)
+```
+```{r}
+season_table <- inner_join(season_table, serve_point_win_season , by = c('player','season'))
+head(season_table)
+```
+
+
+
+```{r}
+serve_point_win_avg <- tennis_data %>%
+  group_by(player) %>%
+  # Filter to find total number of serves our player has (denominator)
+  filter(server == 0) %>%
+  summarize(
+    # Calculate number of serves that meet rallyLength = 1 and filter out unforced errors and lets
+    total_JS_serves = sum(rallyLength == 1 & outcome != "Unforced Error" & outcome != "Let"),
+    Jason_Susan = total_JS_serves / n()
+  )
+
+head(serve_point_win_avg)
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, serve_point_win_avg , by = "player")
+
+
+# View the result
+print(career_table)
+```
+
+```{r Total Points Won by match}
+# this only counts for our team players based off how the column is counted
+points_won <- tennis_data %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, matchId, date) %>%
+  summarize(
+    points_won = n()
+  )
+
+head(points_won)
+```
+
+```{r}
+match_table <- inner_join(match_table, points_won, by = c('player', 'matchId', 'date'))
+```
+
+```{r Total Points Won by  season}
+# this only counts for our team players based off how the column is counted
+points_won_season <- tennis_data %>%
+  group_by(player, season) %>%
+  summarize(
+    total_points_won = sum(pointWonBy == 0),
+    total_points_played = n(),
+    total_points_won_proportion = total_points_won / total_points_played
+  )
+
+head(points_won_season)
+```
+
+```{r}
+season_table <- inner_join(season_table, points_won_season , by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+points_by_game_sum <- tennis_data %>%# macy believes this is correct where pointWonBy
+  group_by(player) %>%
+  summarize(
+    total_points_won = sum(pointWonBy == 0),
+    total_points_played = n(),
+    total_points_won_proportion = total_points_won / total_points_played
+  )
+
+head(points_by_game_sum)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, points_by_game_sum, by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r faults}
+# faults and point won by opponent 
+faults <- tennis_data %>%
+  filter(server == 0) %>% 
+  group_by(player, matchId, date) %>%
+  summarize(faults = sum(outcome == 'Fault'),
+           faults_proportion = faults/n() )
+head(faults)
+  
+```
+```{r}
+match_table <- inner_join(match_table, faults, by = c('player', 'matchId','date'))
+```
+
+```{r faults for macy, switch to 0!!!! }
+# faults and point won by opponent 
+faults_sum <- tennis_data %>%
+  filter(server == 0) %>% 
+  group_by(player) %>%
+  summarize(double_faults = sum(outcome == 'Fault'), double_faults_proportion = double_faults / n())
+head(faults_sum)
+  
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, faults_sum , by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+faults_season <- tennis_data %>%
+  filter(server == 0) %>% 
+  group_by(player, season) %>%
+  summarize(double_faults = sum(outcome == 'Fault'),
+            double_faults_proportion = double_faults / n())
+head(faults_season)
+  
+```
+
+```{r}
+season_table <- inner_join(season_table,faults_season , by = c('player','season'))
+head(season_table)
+```
+
+```{r first serve in }
+# first serves in proportion
+first_serves_in <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player, matchId, date) %>%
+  summarize(proportion_first_serve_in = sum(firstServeIn == TRUE) / n(), .groups = 'drop')
+
+head(first_serves_in)
+```
+```{r}
+match_table <- inner_join(match_table, first_serves_in, by = c('player', 'matchId','date'))
+```
+
+```{r first serve in for macy }
+# first serves in proportion
+first_serves_in_avg <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player) %>%
+  summarize(first_serve_in = sum(firstServeIn == TRUE), proportion_first_serve_in =first_serve_in/ n())
+
+head(first_serves_in_avg)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, first_serves_in_avg , by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+# first serves in proportion
+first_serves_in_season <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player, season) %>%
+  summarize(first_serve_in = sum(firstServeIn == TRUE), proportion_first_serve_in =first_serve_in/ n())
+
+head(first_serves_in_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,first_serves_in_season, by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+# second serves in proportion
+# This occurs when the column first serve in is false but the outcome is not a fault
+second_serves_in <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player, matchId, date) %>%
+  summarize(proportion_second_serve_in = sum(firstServeIn == FALSE & outcome != 'Fault') / sum(firstServeIn == FALSE), .groups = 'drop') #out of all the times the first serve was not in, how often did the second hit go in
+
+head(second_serves_in)
+
+
+```
+```{r}
+match_table <- inner_join(match_table, second_serves_in, by = c('player', 'matchId','date'))
+```
+
+```{r second serves in for macy}
+# second serves in proportion
+# This occurs when the column first serve in is false but the outcome is not a fault
+second_serves_in_avg <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player) %>%
+  summarize(first_serve_out = sum(firstServeIn == FALSE), 
+            second_serve_in = sum(firstServeIn == FALSE & outcome != 'Fault'),
+            proportion_second_serve_in =  second_serve_in / first_serve_out) #out of all the times the first serve was not in, how often did the second hit go in
+
+head(second_serves_in_avg)
+
+
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, second_serves_in_avg , by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+# second serves in proportion
+# This occurs when the column first serve in is false but the outcome is not a fault
+second_serves_in_season <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player, season) %>%
+  summarize(first_serve_out = sum(firstServeIn == FALSE), 
+            second_serve_in = sum(firstServeIn == FALSE & outcome != 'Fault'),
+            proportion_second_serve_in =  second_serve_in / first_serve_out) #out of all the times the first serve was not in, how often did the second hit go in
+
+head(second_serves_in_season)
+
+
+```
+
+```{r}
+season_table <- inner_join(season_table,second_serves_in_season, by = c('player','season'))
+head(season_table)
+```
+
+```{r First Serves Won}
+# I understand this to mean our player served the ball, the ball was in play, and they won the point
+# need to filter to only when our player servers the ball
+
+first_serve_win <- tennis_data %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player, matchId, date) %>%
+  summarize(first_serves_won_proportion = sum(pointWonBy == 0) / n()) ## check == 1 
+head(first_serve_win)
+```
+```{r}
+match_table <- inner_join(match_table, first_serve_win, by = c('player', 'matchId','date'))
+```
+
+
+```{r First Serves Won for macy}
+# I understand this to mean our player served the ball, the ball was in play, and they won the point
+# need to filter to only when our player servers the ball
+
+first_serve_win_avg <- tennis_data %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player) %>%
+  summarize(first_serves_won = sum(pointWonBy == 0),
+            first_serves_won_proportion = first_serves_won / n()) ## check == 1 
+head(first_serve_win_avg)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table, first_serve_win_avg  , by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+first_serve_win_season <- tennis_data %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player, season) %>%
+  summarize(first_serves_won = sum(pointWonBy == 0),
+            first_serves_won_proportion = first_serves_won / n()) ## check == 1 
+head(first_serve_win_avg)
+```
+
+```{r}
+season_table <- inner_join(season_table,first_serve_win_season , by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+second_serve_win <- tennis_data %>%
+  filter(server == 0, firstServeIn == FALSE) %>% 
+  group_by(player, matchId, date) %>%
+  summarize(second_serves_won_proportion = sum(pointWonBy == 0 &  outcome != 'Fault') / n()) 
+head(second_serve_win)
+```
+```{r}
+match_table <- inner_join(match_table, second_serve_win, by = c('player', 'matchId','date'))
+```
+
+```{r second serve win for macy}
+second_serve_win_avg<- tennis_data %>%
+  filter(server == 0, firstServeIn == FALSE) %>% # check == 1 is true
+  group_by(player) %>%
+  summarize(second_serves_won = sum(pointWonBy == 0 & outcome != 'Fault' ),  second_serves_won_proportion = second_serves_won/ n()) 
+head(second_serve_win_avg)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,second_serve_win_avg  , by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+second_serve_win_season<- tennis_data %>%
+  filter(server == 0, firstServeIn == FALSE) %>% # check == 1 is true
+  group_by(player, season) %>%
+  summarize(second_serves_won = sum(pointWonBy == 0 & outcome != 'Fault' ),  second_serves_won_proportion = second_serves_won/ n())  ## check == 1 
+head(second_serve_win_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,second_serve_win_season , by = c('player','season'))
+head(season_table)
+```
+
+```{r First serve return rate}
+# I am understanding this as for the amount of first serves out player faces, how often they return the ball
+first_serve_return <- tennis_data %>%
+  filter(server == 1, firstServeIn == TRUE) %>%
+  group_by(player, matchId, date) %>%
+  summarize(first_serve_return_rate = sum(rallyLength > 1)/n())
+head(first_serve_return)
+```
+```{r}
+match_table <- inner_join(match_table,first_serve_return, by = c('player', 'matchId','date'))
+```
+
+```{r First serve return rate,for macy}
+# I am understanding this as for the amount of first serves out player faces, how often they return the ball
+first_serve_return_avg <- tennis_data %>%
+  filter(server == 1, firstServeIn == TRUE) %>%
+  group_by(player) %>%
+  summarize( first_serve_return = sum(rallyLength > 1),first_serve_return_rate =first_serve_return  /n())
+head(first_serve_return_avg)
+
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,first_serve_return_avg  , by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+first_serve_return_season <- tennis_data %>%
+  filter(server == 1, firstServeIn == TRUE) %>%
+  group_by(player, season) %>%
+  summarize( first_serve_return = sum(rallyLength > 1),first_serve_return_rate =first_serve_return  /n())
+head(first_serve_return_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,first_serve_return_season , by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+second_serve_return <- tennis_data %>%
+  filter(server == 1, firstServeIn == FALSE, outcome != 'Fault') %>%
+  group_by(player, matchId, date) %>%
+  summarize(second_serve_return_rate = sum(rallyLength > 1)/n())
+head(second_serve_return)
+```
+```{r}
+match_table <- inner_join(match_table,second_serve_return, by = c('player', 'matchId','date'))
+```
+
+```{r}
+second_serve_return_avg <- tennis_data %>%
+  filter(server == 1, firstServeIn == FALSE, outcome != 'Fault') %>%
+  group_by(player) %>%
+  summarize(second_serve_returns = sum(rallyLength > 1),  second_serve_return_rate = second_serve_returns /n())
+head(second_serve_return_avg)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,second_serve_return_avg , by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+second_serve_return_season <- tennis_data %>%
+  filter(server == 1, firstServeIn == FALSE, outcome != 'Fault') %>%
+  group_by(player,season) %>%
+  summarize(second_serve_returns = sum(rallyLength > 1),  second_serve_return_rate = second_serve_returns /n())
+head(second_serve_return_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,second_serve_return_season , by = c('player','season'))
+head(season_table)
+```
+
+
+```{r Short Rallies Won} 
+short_rallies <- tennis_data %>%
+  filter(rallyLength < 5) %>%
+  group_by(player, matchId, date) %>%
+  summarize(short_rallies_won = sum(pointWonBy == 0)/n())
+head(short_rallies)
+```
+```{r}
+match_table <- inner_join(match_table,short_rallies, by = c('player', 'matchId', 'date'))
+```
+
+```{r Short Rallies Won for macy} 
+short_rallies_avg <- tennis_data %>%
+  filter(rallyLength < 5) %>%
+  group_by(player) %>%
+  summarize(short_rallies_won = sum(pointWonBy == 0), short_rallies_won_proportion = short_rallies_won /n())
+head(short_rallies_avg)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,short_rallies_avg , by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+short_rallies_season <- tennis_data %>%
+  filter(rallyLength < 5) %>%
+  group_by(player, season) %>%
+  summarize(short_rallies_won = sum(pointWonBy == 0), short_rallies_won_proportion = short_rallies_won /n())
+head(short_rallies_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,short_rallies_season, by = c('player','season'))
+head(season_table)
+```
+
+
+```{r}
+medium_rallies <- tennis_data %>%
+  filter(rallyLength >= 5, rallyLength <= 8) %>%
+  group_by(player, matchId, date) %>%
+  summarize(medium_rallies_won = sum(pointWonBy == 0), medium_rallies_won_proportion = medium_rallies_won/n())
+
+head(medium_rallies)
+
+```
+```{r}
+match_table <- inner_join(match_table,medium_rallies, by = c('player', 'matchId', 'date'))
+```
+
+```{r medium rallies for macy}
+medium_rallies_avg <- tennis_data %>%
+  filter(rallyLength >= 5, rallyLength <= 8) %>%
+  group_by(player) %>%
+  summarize(medium_rallies_won = sum(pointWonBy == 0), medium_rallies_won_proportion = medium_rallies_won/n())
+
+
+head(medium_rallies_avg)
+
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,medium_rallies_avg, by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+medium_rallies_season <- tennis_data %>%
+  filter(rallyLength >= 5, rallyLength <= 8) %>%
+  group_by(player, season) %>%
+  summarize(medium_rallies_won = sum(pointWonBy == 0), medium_rallies_won_proportion = medium_rallies_won/n())
+
+head(medium_rallies_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,medium_rallies_season, by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+long_rallies <- tennis_data %>%
+  filter(rallyLength > 8) %>%
+  group_by(player, matchId, date) %>%
+  summarize(long_rallies_won = sum(pointWonBy == 0)/n())
+
+head(long_rallies)
+
+```
+```{r}
+match_table <- inner_join(match_table,long_rallies, by = c('player', 'matchId', 'date'))
+```
+
+```{r long rallies for macy}
+long_rallies_avg <- tennis_data %>%
+  filter(rallyLength > 8) %>%
+  group_by(player) %>%
+  summarize(long_rallies_won = sum(pointWonBy == 0), long_rallies_won_proportion = long_rallies_won/n())
+
+head(long_rallies_avg)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,long_rallies_avg, by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+long_rallies_season <- tennis_data %>%
+  filter(rallyLength > 8) %>%
+  group_by(player, season) %>%
+  summarize(long_rallies_won = sum(pointWonBy == 0), long_rallies_won_proportion = long_rallies_won/n())
+
+head(long_rallies_season)
+```
+
+```{r}
+season_table <- inner_join(season_table, long_rallies_season, by = c('player','season'))
+head(season_table)
+```
+
+```{r Errors Forced}
+# interpreting this has the number of points out players won from a forced error
+errors_forced <- tennis_data %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, matchId, date) %>%
+  summarize(forced_errors = sum(outcome == 'ForcedError'))
+
+head(errors_forced)
+
+```
+```{r}
+match_table <- inner_join(match_table,errors_forced, by = c('player', 'matchId', 'date'))
+```
+
+
+```{r Errors Forced, for macy}
+# interpreting this has the number of points out players won from a forced error
+errors_forced_total <- tennis_data %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player) %>%
+  summarize(forced_errors =  sum(outcome == 'ForcedError'), forced_errors_percentage = forced_errors/n() )
+
+
+
+head(errors_forced_total)
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,errors_forced_total, by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+errors_forced_total_season <- tennis_data %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, season) %>%
+  summarize(forced_errors =  sum(outcome == 'ForcedError'), forced_errors_percentage = forced_errors/n() )
+
+head(errors_forced_total_season)
+```
+
+```{r}
+season_table <- inner_join(season_table,errors_forced_total_season, by = c('player','season'))
+head(season_table)
+```
+```{r}
+unforced_errors_match <- tennis_data %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player,matchId, date) %>%
+  summarize(unforced_errors = sum(outcome == 'UnforcedError'), unforced_errors_proportion = unforced_errors/ n() )
+
+head(unforced_errors_match)
+```
+```{r}
+match_table <- inner_join(match_table,unforced_errors_match, by = c('player', 'matchId', 'date'))
+```
+
+
+```{r}
+unforced_errors <- tennis_data %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player) %>%
+  summarize(unforced_errors = sum(outcome == 'UnforcedError'), unforced_errors_proportion = unforced_errors/ n() )
+
+head(unforced_errors)
+```
+
+```{r}
+unforced_errors_season <-  tennis_data %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player, season) %>%
+  summarize(unforced_errors = sum(outcome == 'UnforcedError'), unforced_errors_proportion = unforced_errors/ n() )
+
+head(unforced_errors_season)
+```
+
+
+```{r}
+season_table <- inner_join(season_table,unforced_errors_season , by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,unforced_errors, by = "player")
+
+# View the result
+print(career_table)
+```
+
+
+```{r}
+service_games_won <- tennis_data %>%
+  select(c(player, matchId, gameId, date, server, gameWonBy))
+
+service_games_won <- unique(service_games_won)
+service_games_won <- service_games_won %>%
+  filter(server == 0)
+```
+
+
+
+```{r}
+service_games_won_match <- service_games_won %>%
+  group_by(player, matchId, date) %>%
+  summarize(games = n(),
+            wonGames = sum(gameWonBy == 0) / games)
+
+head(service_games_won_match)
+```   
+```{r}
+match_table <- inner_join(match_table,service_games_won_match, by = c('player', 'matchId', 'date'))
+
+```
+
+```{r}
+service_games_won_total <- service_games_won %>%
+  group_by(player) %>%
+  summarize(service_games = n(),
+            service_games_won =  sum(gameWonBy == 0),
+            service_games_won_proportion = service_games_won/ service_games)
+
+head(service_games_won_total)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,service_games_won_total, by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+ service_games_won <- service_games_won%>%
+  mutate(season = sapply(date, get_season))
+```
+
+
+```{r }
+service_games_won_season <- service_games_won %>%
+  group_by(player, season) %>%
+  summarize(service_games = n(),
+            service_games_won = sum(gameWonBy == 0), 
+            service_games_won_proportion = service_games_won / service_games)
+
+head(service_games_won_season)
+```
+
+
+```{r}
+season_table <- inner_join(season_table,service_games_won_season, by = c('player','season'))
+head(season_table)
+```
+
+### SUSAN SUSAN SUSAN
+# MAKE PROPORTION MAKE PROPORTION
+
+```{r, make a proportion out of total game }
+break_point_wins <- tennis_data %>%
+  filter(server == 1) %>%
+  select(c("player", "matchId", "gameId", "date", "server", "breakPoint", "pointWonBy")) %>%
+  group_by(player, matchId, date) %>%
+  summarize(breakPoints = sum(breakPoint == TRUE),
+            breakPointsWon = sum(breakPoint == TRUE & pointWonBy == 0),
+            breakPointsPercent = ifelse(breakPoints > 0, 
+                                        sum(breakPoint == TRUE & pointWonBy == 0) / breakPoints, 
+                                        NA_real_))  # Avoid division by zero
+
+head(break_point_wins)
+```
+```{r}
+match_table <- inner_join(match_table,break_point_wins , by = c('player', 'matchId', 'date'))
+
+```
+
+```{r}
+break_point_wins_total <- tennis_data %>%
+  filter(server == 1) %>%
+  select(c("player", "server", "breakPoint", "pointWonBy")) %>%
+  group_by(player) %>%
+  summarize(
+    breakPoints = sum(breakPoint == TRUE, na.rm = TRUE),  # Total break points faced by the player
+    breakPointsWon = sum(breakPoint == TRUE & pointWonBy == 0, na.rm = TRUE),  # Total break points won by the player
+    breakPointsPercent = ifelse(breakPoints > 0, 
+                                breakPointsWon / breakPoints, 
+                                NA_real_)  # Percent of break points won
+  ) 
+
+
+# Display first rows:
+head(break_point_wins_total)
+
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,break_point_wins_total, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+break_point_wins_season <- tennis_data %>%
+  filter(server == 1) %>%
+  select(c("player", "server", "breakPoint", "pointWonBy", "season")) %>%
+  group_by(player, season) %>%
+  summarize(
+    breakPoints = sum(breakPoint == TRUE, na.rm = TRUE),  # Total break points faced by the player
+    breakPointsWon = sum(breakPoint == TRUE & pointWonBy == 0, na.rm = TRUE),  # Total break points won by the player
+    breakPointsPercent = ifelse(breakPoints > 0, 
+                                breakPointsWon / breakPoints, 
+                                NA_real_)  # Percent of break points won
+  ) 
+
+# Display first rows:
+head(break_point_wins_season)
+```
+```{r}
+season_table <- inner_join(season_table,break_point_wins_season, by = c('player','season'))
+head(season_table)
+```
+
+Develop a First serve performance rating metric. Using Craig O’Shannessy formula of first serve percentage multiplied by the decimal of first serve win percentage. For example 65% first serve percentage x .70 (70%) first serve win percentage equals 45.5.
+
+```{r}
+Craig_Shannessy <- inner_join(first_serves_in, first_serve_win, by = c('player','matchId','date'))
+head(Craig_Shannessy)
+Craig_Shannessy <- Craig_Shannessy %>%
+  mutate(season = sapply(date, get_season))
+
+Craig_Shannessy$Craig <- Craig_Shannessy$proportion_first_serve_in * Craig_Shannessy$first_serves_won_proportion
+```
+```{r}
+craig_total <- Craig_Shannessy %>%
+  group_by(player) %>%
+  summarize(craig = mean(Craig))
+head(craig_total)
+```
+
+```{r}
+craig_season <- Craig_Shannessy %>%
+  group_by(player,season) %>%
+  summarize(craig = mean(Craig))
+head(craig_season)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,craig_total, by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+season_table <- inner_join(season_table,craig_season, by = c('player','season'))
+head(season_table)
+```
+
+```{r}
+plusMinusRatio <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player) %>%
+  summarize(aces = sum(outcome == "Ace"),
+            winners = sum(outcome == "Winner"),
+            forcedErrors = sum(outcome == "ForcedError"),
+            doubleFaults = sum(outcome == "Fault"),
+            unforcedErrors = sum(outcome == "UnforcedError"),
+            PMR = (aces + winners + forcedErrors) - (doubleFaults + unforcedErrors)
+            )
+
+head(plusMinusRatio)
+```
+
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+career_table <- inner_join(career_table, plusMinusRatio %>% select(player, PMR), by = "player")
+
+# View the result
+print(career_table)
+
+```
+```{r}
+plusMinusRatio_season <- tennis_data %>%
+  filter(server == 0) %>%
+  group_by(player, season) %>%
+  summarize(aces = sum(outcome == "Ace"),
+            winners = sum(outcome == "Winner"),
+            forcedErrors = sum(outcome == "ForcedError"),
+            doubleFaults = sum(outcome == "Fault"),
+            unforcedErrors = sum(outcome == "UnforcedError"),
+            PMR = (aces + winners + forcedErrors) - (doubleFaults + unforcedErrors)
+            )
+
+head(plusMinusRatio_season)
+```
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table, plusMinusRatio_season %>% select(player,season, PMR), by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+
+SET METRICS
+
+```{r}
+tennis_dataSet <- tennis_data %>%
+  rowwise() %>%
+  mutate(setNo = sub(".*-", "", setId)) %>%
+  mutate(evaluated_score = eval(parse(text = finalScore_1))) %>%
+  mutate(set1 = case_when(
+    as.integer(evaluated_score) > 0 ~ "Win",
+    as.integer(evaluated_score) < 0 ~ "Loss",
+    TRUE ~ as.character(evaluated_score)
+  )) %>%
+  select(-evaluated_score) %>%
+  mutate(evaluated_score = eval(parse(text = finalScore_2))) %>%
+  mutate(set2 = case_when(
+    as.integer(evaluated_score) > 0 ~ "Win",
+    as.integer(evaluated_score) < 0 ~ "Loss",
+    TRUE ~ as.character(evaluated_score)
+  )) %>%
+  select(-evaluated_score) %>%
+  mutate(evaluated_score = eval(parse(text = finalScore_3))) %>%
+  mutate(set3 = case_when(
+    as.integer(evaluated_score) > 0 ~ "Win",
+    as.integer(evaluated_score) < 0 ~ "Loss",
+    TRUE ~ as.character(evaluated_score)
+  )) %>%
+  select(-evaluated_score)
+```
+
+```{r}
+setsWon <- tennis_dataSet %>%
+  filter(setNo == 1 & set1 == "Win" | setNo == 2 & set2 == "Win" | setNo == 3 & set3 == "Win")
+setsLoss <- tennis_dataSet %>%
+  filter(setNo == 1 & set1 == "Loss" | setNo == 2 & set2 == "Loss" | setNo == 3 & set3 == "Loss")
+
+```
+
+```{r}
+First_Serve_Percentage_Won_total <-  setsWon %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player) %>%
+  summarize(first_serves_won_set_won_proportion = sum(pointWonBy == 0) / n())
+  
+head(First_Serve_Percentage_Won_total)
+
+First_Serve_Percentage_Won_total_team <- mean(First_Serve_Percentage_Won_total$first_serves_won_set_won_proportion)
+```
+
+
+
+```{r}
+First_Serve_Percentage_Won_season <-  setsWon %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player, season) %>%
+  summarize(first_serves_won_set_won_proportion = sum(pointWonBy == 0) / n())
+  
+head(First_Serve_Percentage_Won_season)
+
+
+
+```
+
+```{r}
+
+First_Serve_Percentage_loss_total <-  setsLoss %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player) %>%
+  summarize(first_serves_won_set_loss_proportion = sum(pointWonBy == 0) / n())
+  
+head(First_Serve_Percentage_loss_total)
+
+First_Serve_Percentage_loss_total_team <-  mean(First_Serve_Percentage_loss_total$first_serves_won_set_loss_proportion)
+First_Serve_Percentage_loss_total_team
+```
+
+```{r}
+First_Serve_Percentage_loss_season<-  setsLoss %>%
+  filter(server == 0, firstServeIn == TRUE) %>% # check == 1 is true
+  group_by(player,season) %>%
+  summarize(first_serves_won_set_loss_proportion = sum(pointWonBy == 0) / n())
+  
+head(First_Serve_Percentage_loss_season)
+
+
+```
+
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,First_Serve_Percentage_loss_total , by = "player")
+
+# Perform the join
+career_table <- inner_join(career_table,First_Serve_Percentage_Won_total , by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+
+season_table <- inner_join(season_table,First_Serve_Percentage_Won_season, by = c("player", "season"))
+season_table <- inner_join(season_table,First_Serve_Percentage_loss_season, by = c("player", "season"))
+# View the result
+print(season_table)
+```
+
+```{r}
+# we want to see the unforced error rate avg on a set level base (when our player lost a point due to an unforced error) for both set wins and set losses
+# for example, for all sets won by our player, what was the average number of unfroced errors that our player lost points on
+UE_SET_WON <- setsWon %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player, matchId, date) %>%
+  summarize(unforced_error = sum(outcome == 'UnforcedError'),
+            unforced_error_percentage = unforced_error / n())
+
+head(UE_SET_WON)
+```
+```{r}
+UE_SET_WON_total <- setsWon %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player) %>%
+  summarize(
+    sets_won_unforeced_error = sum(outcome == 'UnforcedError'),  # Summing unforced errors
+    setsWon = n(),  # Counting the number of sets won
+    SUEW_prop = sets_won_unforeced_error / setsWon  # Proportion of unforced errors per set won
+  )
+
+# View the result
+head(UE_SET_WON_total)
+
+```
+
+```{r}
+UE_SET_WON_season <- setsWon %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player, season) %>%
+  summarize(
+    sets_won_unforeced_error = sum(outcome == 'UnforcedError'),  # Summing unforced errors
+    setsWon = n(),  # Counting the number of sets won
+    SUEW_prop = sets_won_unforeced_error / setsWon  # Proportion of unforced errors per set won
+  )
+
+# View the result
+head(UE_SET_WON_season)
+```
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table,UE_SET_WON_season, by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+
+```{r}
+UE_SET_LOST <- setsLoss %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player, matchId, date) %>%
+  summarize(unforeced_error = sum(outcome == 'UnforcedError'))
+
+head(UE_SET_WON)
+```
+```{r}
+UE_SET_loss_total <- setsLoss %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player) %>%
+  summarize(
+    set_lost_unforeced_error = sum(outcome == 'UnforcedError'),  # Summing unforced errors
+    sets_lost = n(),  # Counting the number of sets won
+    SUEL_prop = set_lost_unforeced_error / sets_lost  # Proportion of unforced errors per set won
+  )
+
+# View the result
+head(UE_SET_loss_total)
+
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,UE_SET_WON_total, by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,UE_SET_loss_total, by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+UE_SET_loss_season <- setsLoss %>%
+  filter(pointWonBy == 1) %>%
+  group_by(player, season) %>%
+  summarize(
+    set_lost_unforeced_error = sum(outcome == 'UnforcedError'),  # Summing unforced errors
+    sets_lost = n(),  # Counting the number of sets won
+    SUEL_prop = set_lost_unforeced_error / sets_lost  # Proportion of unforced errors per set won
+  )
+
+# View the result
+head(UE_SET_loss_season)
+```
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table,UE_SET_loss_season, by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+
+```{r}
+FE_SET_WON <- setsWon %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, matchId) %>%
+  summarize(forced_error_set_won = sum(outcome == 'ForcedError'))
+
+head(FE_SET_WON)
+```
+```{r}
+FE_SET_lost <- setsLoss %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, matchId) %>%
+  summarize(foreced_error_set_lost = sum(outcome == 'ForcedError'))
+
+head(FE_SET_lost)
+```
+```{r}
+FE_SET_WON_total <- setsWon %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player) %>%
+  summarize(forced_error_set_won = sum(outcome == 'ForcedError'),
+            FE_sets_won_proportion = forced_error_set_won / n())
+
+head(FE_SET_WON_total)
+```
+```{r}
+FE_SET_WON_season <- setsWon %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, season) %>%
+  summarize(forced_error_set_won = sum(outcome == 'ForcedError'),
+            FE_sets_won_proportion = forced_error_set_won / n())
+
+head(FE_SET_WON_season)
+```
+
+```{r}
+FE_SET_lost_total <- setsLoss %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player) %>%
+  summarize(forced_error_set_lost = sum(outcome == 'ForcedError'),
+            FE_set_loss_proportion = forced_error_set_lost/ n())
+
+head(FE_SET_lost_total)
+```
+```{r}
+FE_SET_lost_season <- setsLoss %>%
+  filter(pointWonBy == 0) %>%
+  group_by(player, season) %>%
+  summarize(forced_error_set_lost = sum(outcome == 'ForcedError'),
+            FE_set_loss_proportion = forced_error_set_lost/ n())
+
+head(FE_SET_lost_season)
+```
+
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,FE_SET_lost_total, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,FE_SET_WON_total, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table,FE_SET_lost_season, by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table,FE_SET_WON_season, by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+
+```{r}
+double_faults_on_second_serve_set_won <- setsWon %>%
+  filter(server == 0, firstServeIn == FALSE) %>%
+  group_by(player) %>%
+  summarize(double_fault_serve_set_won = sum(outcome == 'Fault'),
+            proportion_double_faults_serve_set_won = double_fault_serve_set_won/ n())
+
+head(double_faults_on_second_serve_set_won)
+```
+```{r}
+double_faults_on_second_serve_set_won_season <- setsWon %>%
+  filter(server == 0, firstServeIn == FALSE) %>%
+  group_by(player, season) %>%
+  summarize(double_fault_serve_set_won = sum(outcome == 'Fault'),
+            proportion_double_faults_serve_set_won = double_fault_serve_set_won/ n())
+
+head(double_faults_on_second_serve_set_won_season)
+```
+
+```{r}
+double_faults_on_second_serve_set_loss <- setsLoss %>%
+  filter(server == 0, firstServeIn == FALSE) %>%
+  group_by(player) %>%
+  summarize(double_fault_set_loss = sum(outcome == 'Fault'),
+            proportion_double_faults_set_loss = double_fault_set_loss/ n())
+
+head(double_faults_on_second_serve_set_loss)
+```
+```{r}
+#how often you double fault when you have already faulted once 
+double_faults_on_second_serve_set_loss_season <- setsLoss %>%
+  filter(server == 0, firstServeIn == FALSE) %>%
+  group_by(player, season) %>%
+  summarize(double_fault_set_loss = sum(outcome == 'Fault'),
+            proportion_double_faults_set_loss = double_fault_set_loss/ n()rty)
+
+head(double_faults_on_second_serve_set_loss_season)
+```
+
+
+
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,double_faults_on_second_serve_set_won, by = "player")
+
+# View the result
+print(career_table)
+```
+
+```{r}
+# Perform the join
+career_table <- inner_join(career_table,double_faults_on_second_serve_set_loss, by = "player")
+
+# View the result
+print(career_table)
+```
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table,double_faults_on_second_serve_set_won_season, by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+
+```{r}
+# Select the relevant columns from plusMinusRatio and perform the join
+season_table <- inner_join(season_table,double_faults_on_second_serve_set_loss_season, by = c("player", "season"))
+
+# View the result
+print(season_table)
+```
+```{r}
+# create one table 
+
+career_table$Season <- "Career"
+
+
+# View the result
+print(career_table)
+
+```
+```{r}
+
+season_table <- season_table %>%
+  rename(Season = season)
+
+
+```
+
+
+```{r}
+head(season_table)
+```
+```{r}
+head(career_table)
+```
+
+```{r}
+avg_stats_table <- avg_stats_table %>%
+  rename(Season = season)
+```
+```{r}
+head(avg_stats_table)
+```
+
+```{r}
+avg_stats_table <- avg_stats_table %>%
+  rename(double_faults_proportion = double_fautls_proportion, sets_won_unforeced_error = sets_won_unforced_error, set_lost_unforeced_error = set_lost_unforced_error)
+
+# Function to compare columns between two tables
+compare_columns <- function(df1, df2) {
+  # Get the column names of each data frame
+  cols_df1 <- colnames(df1)
+  cols_df2 <- colnames(df2)
+  
+  # Find columns in df1 that are not in df2
+  cols_in_df1_not_df2 <- setdiff(cols_df1, cols_df2)
+  
+  # Find columns in df2 that are not in df1
+  cols_in_df2_not_df1 <- setdiff(cols_df2, cols_df1)
+  
+  # Create a list to store the differences
+  differences <- list(
+    "In df1 but not in df2" = cols_in_df1_not_df2,
+    "In df2 but not in df1" = cols_in_df2_not_df1
+  )
+  
+  return(differences)
+}
+
+```
+
+```{r}
+column_differences <- compare_columns(career_table, season_table)
+print(column_differences)
+```
+
+```{r}
+full_data <- rbind(career_table, season_table)
+
+```
+
+
+```{r}
+head(full_data)
+```
+```{r}
+
+# Example usage
+column_differences <- compare_columns(avg_stats_table, full_data)
+print(column_differences)
+
+```
+
+
+
+```{r}
+full_data <- rbind(avg_stats_table, full_data)
+```
+
+
+```{r}
+head(full_data)
+```
+
+```{r}
+# Save season_table to a CSV file
+write.csv(season_table, "season_table.csv", row.names = FALSE)
+
+```
+
+```{r}
+# Save career_table to a CSV file
+write.csv(career_table, "career_table.csv", row.names = FALSE)
+
+
+```
+
+```{r}
+write.csv(full_data, "f_table.csv", row.names = FALSE)
+```
+
